@@ -1,0 +1,31 @@
+{
+  "name": "secure-verification-engine",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "generate-qr": "node scripts/generateQR.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devlogixtechnology/Secure-Verification-Engine.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/devlogixtechnology/Secure-Verification-Engine/issues"
+  },
+  "homepage": "https://github.com/devlogixtechnology/Secure-Verification-Engine#readme",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "mongoose": "^9.9.3",
+    "qrcode": "^1.5.4",
+    "uuid": "^14.0.2"
+  }
+}
