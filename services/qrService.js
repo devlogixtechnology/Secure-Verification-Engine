@@ -1,120 +1,310 @@
 const crypto = require("crypto");
 const path = require("path");
-const fs = require("fs");
-const { v4: uuidv4 } = require("uuid");
+const fsp = require("fs/promises");
 const QRCode = require("qrcode");
+
 const { qrConfig } = require("../config/qr");
 const QRAsset = require("../models/qrAsset");
+const logger = require("../utils/logger");
+const { ConflictError, NotFoundError } = require("../utils/errors");
+const { validateQrPayload, UUID_PATTERN } = require("../validators/qrPayload");
 
 /**
- * Generate a cryptographic verification hash using HMAC-SHA256.
+ * QR generation service.
  *
- * The hash is constructed from:
- *   message = "userId:purpose:nonce:issuedAt"
- *   hash    = HMAC-SHA256(message, QR_HASH_SECRET)
+ * Pure module: no Express, no request objects, no process.exit. It is driven
+ * identically by the HTTP controller, the CLI script and any future queue
+ * consumer, which is what lets the brief's "independently testable and callable"
+ * requirement actually hold.
  *
- * @param {Object} payload
- * @param {string} payload.userId  - User or entity identifier
- * @param {string} payload.purpose - Verification purpose (e.g. "identity")
- * @returns {{ hash: string, nonce: string, issuedAt: Date, expiresAt: Date }}
+ * Identifier ownership: Backend Squad A mints both documentId and qrCodeId
+ * (Prisma uuid() defaults on their documents table). We never invent our own
+ * identifier - we sign theirs. Full rationale in docs/qr-payload-spec.md.
  */
-function generateVerificationHash({ userId, purpose }) {
-  const nonce = uuidv4();
-  const issuedAt = new Date();
-  const expiresAt = new Date(
-    issuedAt.getTime() + qrConfig.expiryHours * 60 * 60 * 1000
-  );
 
-  const message = `${userId}:${purpose}:${nonce}:${issuedAt.toISOString()}`;
-  const hash = crypto
+/**
+ * Signing scheme version. Prefixed into every hash so the scheme can be
+ * rotated later without silently accepting old-format signatures.
+ */
+const HASH_SCHEME = "v1";
+
+// -- Signing ---------------------------------------------------------------
+
+/**
+ * Build the exact byte string that gets signed.
+ *
+ * Every component is stored on the record, so the hash is recomputable - which
+ * is what makes it a signature rather than an opaque random identifier. Change
+ * any bound field and verification fails.
+ */
+function buildSigningMessage({ documentId, qrCodeId, issuedAt, expiresAt }) {
+  return [
+    HASH_SCHEME,
+    documentId,
+    qrCodeId,
+    issuedAt.toISOString(),
+    expiresAt.toISOString(),
+  ].join(":");
+}
+
+/**
+ * Sign a document QR binding with HMAC-SHA256.
+ *
+ * Deterministic: the same inputs always produce the same hash, which is what
+ * makes the idempotency guard verifiable rather than merely hopeful.
+ *
+ * @returns {string} hex digest
+ */
+function signVerificationHash({ documentId, qrCodeId, issuedAt, expiresAt }) {
+  return crypto
     .createHmac("sha256", qrConfig.hashSecret)
-    .update(message)
+    .update(buildSigningMessage({ documentId, qrCodeId, issuedAt, expiresAt }))
     .digest("hex");
-
-  return { hash, nonce, issuedAt, expiresAt };
 }
 
 /**
- * Generate a QR code image from a verification URL.
+ * Recompute a stored record signature and compare it in constant time.
  *
- * Produces:
- *   1. A base64 data URL (for email embedding / inline display)
- *   2. A PNG file on disk (for persistent storage)
- *
- * @param {string} verificationUrl - The full URL to encode in the QR
- * @param {string} hash            - The verification hash (used for filename)
- * @returns {Promise<{ dataUrl: string, filePath: string }>}
+ * @param {Object} asset - a QRAsset loaded WITH verificationHash. It is
+ *                         select:false, so query with
+ *                         .select("+verificationHash")
+ * @returns {boolean} true when the record has not been tampered with
  */
-async function generateQRCode(verificationUrl, hash) {
-  const qrOptions = {
-    errorCorrectionLevel: qrConfig.errorCorrectionLevel,
-    width: qrConfig.width,
-    margin: 2,
-    color: {
-      dark: "#000000",
-      light: "#FFFFFF",
-    },
-  };
+function verifyVerificationHash(asset) {
+  if (!asset || !asset.verificationHash) return false;
 
-  // Generate base64 data URL
-  const dataUrl = await QRCode.toDataURL(verificationUrl, qrOptions);
-
-  // Ensure output directory exists
-  const outputDir = path.resolve(qrConfig.outputDir);
-  await fs.promises.mkdir(outputDir, { recursive: true });
-
-  // Generate PNG file
-  const fileName = `qr_${hash.substring(0, 12)}_${uuidv4()}.png`;
-  const filePath = path.join(outputDir, fileName);
-  await QRCode.toFile(filePath, verificationUrl, qrOptions);
-
-  return { dataUrl, filePath };
-}
-
-/**
- * Full orchestration: generate hash → build URL → create QR → save to DB.
- *
- * This is the main public function that teammates should call.
- *
- * @param {Object} params
- * @param {string} params.userId   - User or entity identifier
- * @param {string} params.purpose  - Verification purpose
- * @param {Object} [params.metadata] - Optional extra context to store
- * @returns {Promise<Object>} The saved QRAsset document
- */
-async function createVerificationQR({ userId, purpose, metadata = {} }) {
-  // 1. Generate cryptographic hash
-  const { hash, nonce, issuedAt, expiresAt } = generateVerificationHash({
-    userId,
-    purpose,
+  const expected = signVerificationHash({
+    documentId: asset.documentId,
+    qrCodeId: asset.qrCodeId,
+    issuedAt: asset.issuedAt,
+    expiresAt: asset.expiresAt,
   });
 
-  // 2. Build verification URL
-  const verificationUrl = `${qrConfig.baseVerificationUrl}${hash}`;
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(asset.verificationHash, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
 
-  // 3. Generate QR code image (data URL + PNG file)
-  const { dataUrl, filePath } = await generateQRCode(verificationUrl, hash);
+// -- Expiry policy ---------------------------------------------------------
 
-  // 4. Persist to MongoDB
-  const qrAsset = await QRAsset.create({
-    verificationHash: hash,
-    userId,
-    purpose,
-    nonce,
+/**
+ * Resolve when this QR stops being valid.
+ *
+ * Squad A document expiry wins when present - a certificate valid until 2027
+ * must not carry a QR that dies tomorrow. When their expiryDate is null (their
+ * column is nullable) we fall back to a bounded default rather than issuing a
+ * token that is valid forever.
+ */
+function resolveExpiry({ issuedAt, expiryDate }) {
+  if (expiryDate) return expiryDate;
+  return new Date(
+    issuedAt.getTime() + qrConfig.defaultExpiryHours * 60 * 60 * 1000
+  );
+}
+
+// -- URL building ----------------------------------------------------------
+
+/**
+ * The deep link encoded into the QR image: Frontend Squad A portal, not our
+ * API. A person scanning a certificate must land on a readable result page.
+ */
+function buildVerificationUrl(qrCodeId) {
+  return `${qrConfig.verificationBaseUrl}/${qrCodeId}`;
+}
+
+// -- Image rendering -------------------------------------------------------
+
+const QR_RENDER_OPTIONS = {
+  errorCorrectionLevel: qrConfig.errorCorrectionLevel,
+  width: qrConfig.width,
+  margin: 2,
+  color: { dark: "#000000", light: "#FFFFFF" },
+};
+
+/**
+ * Guard every filesystem path built from caller-supplied input.
+ *
+ * qrCodeId reaches this module from outside - today the CLI, shortly an HTTP
+ * route parameter - so it is checked against the UUID pattern before it is ever
+ * joined onto a path. Validating at the boundary of the filesystem rather than
+ * only at the boundary of the request keeps the guarantee when a new caller
+ * appears.
+ */
+function assertSafeQrCodeId(qrCodeId) {
+  if (typeof qrCodeId !== "string" || !UUID_PATTERN.test(qrCodeId)) {
+    throw new NotFoundError();
+  }
+}
+
+function cachePathFor(qrCodeId) {
+  assertSafeQrCodeId(qrCodeId);
+  return path.join(path.resolve(qrConfig.outputDir), `${qrCodeId}.png`);
+}
+
+/**
+ * Render the QR PNG and write it to the local cache.
+ *
+ * Rendering is deterministic for a given verification URL, so the file on disk
+ * is a cache and never the source of truth. A failed write is logged and
+ * swallowed: the record is still valid and the image route will re-render on
+ * the next request.
+ *
+ * @returns {Promise<{ buffer: Buffer, filePath: string|null }>}
+ */
+async function renderQrPng(verificationUrl, qrCodeId) {
+  const buffer = await QRCode.toBuffer(verificationUrl, QR_RENDER_OPTIONS);
+
+  let filePath = null;
+  try {
+    const outputDir = path.resolve(qrConfig.outputDir);
+    await fsp.mkdir(outputDir, { recursive: true });
+    filePath = cachePathFor(qrCodeId);
+    await fsp.writeFile(filePath, buffer);
+  } catch (err) {
+    filePath = null;
+    logger.warn("QR image cache write failed; will render on demand", {
+      qrCodeFp: logger.fingerprint(qrCodeId),
+      reason: err.message,
+    });
+  }
+
+  return { buffer, filePath };
+}
+
+// -- Generation ------------------------------------------------------------
+
+/**
+ * Distinguish which unique index a Mongo duplicate-key error tripped.
+ * @returns {string|null} the offending field name
+ */
+function duplicateKeyField(err) {
+  if (err?.code !== 11000) return null;
+  return Object.keys(err.keyPattern ?? err.keyValue ?? {})[0] ?? null;
+}
+
+function conflictForMismatch(existing, requestedQrCodeId) {
+  return new ConflictError(
+    "This documentId was already issued a QR code with a different qrCodeId.",
+    {
+      field: "qrCodeId",
+      documentId: existing.documentId,
+      issuedQrCodeId: existing.qrCodeId,
+      requestedQrCodeId,
+    }
+  );
+}
+
+/**
+ * Generate - or return the already-generated - QR for one of Squad A documents.
+ *
+ * Idempotent on documentId. A retried webhook, a duplicate queue delivery or
+ * two concurrent calls all converge on a single QR asset: the first call
+ * creates it, every later call gets that same record back with
+ * idempotent: true. The guarantee rests on the unique index in MongoDB rather
+ * than on a read-then-write check, which two concurrent requests would both
+ * pass.
+ *
+ * The one case we refuse rather than absorb: the same documentId arriving with
+ * a different qrCodeId. Silently returning the stored QR would hand Squad A a
+ * code that does not match what their database now says.
+ *
+ * @param {Object} payload - see docs/qr-payload-spec.md
+ * @returns {Promise<{ asset: Object, idempotent: boolean }>}
+ * @throws {ValidationError|ConflictError}
+ */
+async function createVerificationQR(payload) {
+  const input = validateQrPayload(payload);
+  const { documentId, qrCodeId } = input;
+
+  // Fast path: already issued. Cheap, and covers the overwhelming majority of
+  // duplicate triggers without touching the QR renderer.
+  const existing = await QRAsset.findOne({ documentId });
+  if (existing) {
+    if (existing.qrCodeId !== qrCodeId) {
+      throw conflictForMismatch(existing, qrCodeId);
+    }
+    logger.info("QR generation skipped; already issued", {
+      documentId,
+      idempotent: true,
+    });
+    return { asset: existing, idempotent: true };
+  }
+
+  const issuedAt = input.issuanceDate ?? new Date();
+  const expiresAt = resolveExpiry({ issuedAt, expiryDate: input.expiryDate });
+  const verificationUrl = buildVerificationUrl(qrCodeId);
+  const verificationHash = signVerificationHash({
+    documentId,
+    qrCodeId,
     issuedAt,
     expiresAt,
-    qrCodePath: filePath,
-    qrDataUrl: dataUrl,
-    verificationUrl,
-    status: "active",
-    metadata,
   });
 
-  return qrAsset;
+  const { filePath } = await renderQrPng(verificationUrl, qrCodeId);
+
+  try {
+    const asset = await QRAsset.create({
+      documentId,
+      qrCodeId,
+      verificationHash,
+      documentType: input.documentType,
+      title: input.title,
+      referenceNumber: input.referenceNumber,
+      recipientName: input.recipientName,
+      recipientEmail: input.recipientEmail,
+      issuedAt,
+      expiresAt,
+      qrCodePath: filePath,
+      verificationUrl,
+      status: "active",
+      metadata: input.metadata,
+    });
+
+    logger.info("QR generated", {
+      documentId,
+      qrCodeFp: logger.fingerprint(qrCodeId),
+      expiresAt: expiresAt.toISOString(),
+    });
+
+    return { asset, idempotent: false };
+  } catch (err) {
+    const field = duplicateKeyField(err);
+
+    // Lost a race against a concurrent identical request. The winner record is
+    // the canonical one; return it and report the call as idempotent.
+    if (field === "documentId") {
+      const winner = await QRAsset.findOne({ documentId });
+      if (winner) {
+        if (winner.qrCodeId !== qrCodeId) {
+          throw conflictForMismatch(winner, qrCodeId);
+        }
+        logger.info("QR generation raced; returning stored record", {
+          documentId,
+          idempotent: true,
+        });
+        return { asset: winner, idempotent: true };
+      }
+    }
+
+    // A different document already owns this qrCodeId - genuinely bad input.
+    if (field === "qrCodeId") {
+      throw new ConflictError(
+        "This qrCodeId is already bound to a different documentId.",
+        { field: "qrCodeId", requestedDocumentId: documentId }
+      );
+    }
+
+    throw err;
+  }
 }
 
 module.exports = {
-  generateVerificationHash,
-  generateQRCode,
   createVerificationQR,
+  signVerificationHash,
+  verifyVerificationHash,
+  buildVerificationUrl,
+  resolveExpiry,
+  renderQrPng,
+  HASH_SCHEME,
 };

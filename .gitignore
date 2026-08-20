@@ -3,3 +3,9 @@ node_modules/
 
 # Generated QR code images (keep the directory, ignore the PNGs)
 generated/qrcodes/*.png
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+tests/.tmp/
