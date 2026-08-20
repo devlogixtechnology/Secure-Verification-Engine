@@ -37,7 +37,7 @@ function renderTemplate(templateName, data = {}) {
 async function sendEmail({ to, subject, html }) {
   try {
     const info = await transporter.sendMail({
-      from: smtpConfig.auth.user,
+      from: process.env.SMTP_FROM || smtpConfig.auth.user,
       to,
       subject,
       html,
