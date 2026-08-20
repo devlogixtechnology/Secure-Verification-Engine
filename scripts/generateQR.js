@@ -56,7 +56,7 @@ async function main() {
   }
 
   // Connect to MongoDB
-  console.log(`\n  Connecting to MongoDB: ${qrConfig.mongoUri}`);
+  console.log("\n  Connecting to MongoDB...");
   await mongoose.connect(qrConfig.mongoUri);
   console.log("  Connected.\n");
 
