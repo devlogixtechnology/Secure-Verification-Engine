@@ -45,10 +45,10 @@ async function sendAssetEmail(req, res) {
         error: result.error,
       });
 
+      console.error("SMTP Send Failure:", result.error);
       return res.status(500).json({
         success: false,
-        message: "Email failed to send",
-        error: result.error,
+        message: "Email failed to send. Please try again later.",
       });
     }
   } catch (err) {
@@ -60,11 +60,12 @@ async function sendAssetEmail(req, res) {
       error: err.message,
     }).catch(() => {}); // don't let a logging failure crash the response
 
-    return res.status(500).json({
-      success: false,
-      message: "Something went wrong",
-      error: err.message,
-    });
+    console.error("SMTP Send Failure:", err.message);
+    
+  return res.status(500).json({
+    success: false,
+    message: "Something went wrong. Please try again later.",
+});
   }
 }
 
