@@ -16,11 +16,21 @@ const transporter = nodemailer.createTransport(smtpConfig);
  */
 function renderTemplate(templateName, data = {}) {
   const filePath = path.join(__dirname, "..", "templates", templateName);
-  let html = fs.readFileSync(filePath, "utf-8");
+
+  // Cache template content to avoid blocking disk reads on each request.
+  renderTemplate._cache ??= new Map();
+  const cached = renderTemplate._cache.get(filePath);
+  let html = cached ?? fs.readFileSync(filePath, "utf-8");
+  if (!cached) renderTemplate._cache.set(filePath, html);
+
+  const escapeHtml = (val) =>
+    String(val).replace(/[&<>"']/g, (ch) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
+    );
 
   for (const [key, value] of Object.entries(data)) {
     const pattern = new RegExp(`{{\\s*${key}\\s*}}`, "g");
-    html = html.replace(pattern, value);
+    html = html.replace(pattern, escapeHtml(value));
   }
 
   return html;
