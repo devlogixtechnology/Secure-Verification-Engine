@@ -1,9 +1,13 @@
 require("dotenv").config();
 
+const hashSecret = process.env.QR_HASH_SECRET;
+if (!hashSecret) {
+  throw new Error("QR_HASH_SECRET is required (refuse to start with a default secret).");
+}
+
 const qrConfig = {
   // HMAC-SHA256 secret for signing verification hashes
-  hashSecret: process.env.QR_HASH_SECRET || "default-dev-secret-change-in-production",
-
+  hashSecret,
   // Token expiry in hours
   expiryHours: Number(process.env.QR_EXPIRY_HOURS) || 24,
 
