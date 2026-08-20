@@ -83,19 +83,25 @@ async function handleWebhook(req, res) {
     failed: "failed",
   };
 
-  const status = statusMap[event] || event;
-
-  const updated = await EmailLog.findOneAndUpdate(
-    { messageId },
-    { status },
-    { new: true }
-  );
-
-  if (!updated) {
-    return res.status(404).json({ success: false, message: "No matching EmailLog found" });
+  const status = statusMap[event];
+  if (!status) {
+    return res.status(400).json({ success: false, message: "Unsupported event" });
   }
 
-  return res.status(200).json({ success: true, message: "EmailLog updated", data: updated });
-}
+  try {
+    const updated = await EmailLog.findOneAndUpdate(
+      { messageId },
+      { status },
+      { new: true, runValidators: true }
+    );
+
+    if (!updated) {
+      return res.status(404).json({ success: false, message: "No matching EmailLog found" });
+    }
+
+    return res.status(200).json({ success: true, message: "EmailLog updated", data: updated });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: "Failed to update EmailLog" });
+  }
 
 module.exports = { sendAssetEmail, handleWebhook };
