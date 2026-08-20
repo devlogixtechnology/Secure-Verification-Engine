@@ -61,9 +61,7 @@ async function generateQRCode(verificationUrl, hash) {
 
   // Ensure output directory exists
   const outputDir = path.resolve(qrConfig.outputDir);
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-  }
+  await fs.promises.mkdir(outputDir, { recursive: true });
 
   // Generate PNG file
   const fileName = `qr_${hash.substring(0, 12)}_${uuidv4()}.png`;
