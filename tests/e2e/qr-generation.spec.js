@@ -16,7 +16,7 @@ const QRAsset = require("../../models/qrAsset");
  *
  * Validation lives in the service rather than in HTTP middleware, so these
  * properties hold for the CLI and for any future queue consumer, not only for
- * the API that the follow-up task exposes.
+ * the HTTP API. The API-level counterparts live in tests/e2e/api/.
  */
 
 test.beforeAll(async () => {
@@ -162,11 +162,16 @@ test.describe("Generation contract", () => {
 
   test("keeps the signature out of the reference shape", async () => {
     const { asset } = await createVerificationQR(newDocumentPayload());
-    const reference = QRAsset.toReferenceJSON(asset);
+    const reference = QRAsset.toReferenceJSON(asset, qrConfig.publicBaseUrl);
 
     expect(reference).not.toHaveProperty("verificationHash");
     expect(reference).not.toHaveProperty("qrCodePath");
     expect(reference).not.toHaveProperty("recipientEmail");
+
+    // The caller gets a URL it can fetch, never a path inside our container.
+    expect(reference.qrImageUrl).toBe(
+      `${qrConfig.publicBaseUrl}/api/qr/image/${asset.qrCodeId}.png`
+    );
   });
 
   test("reports an elapsed expiry as expired without a sweeper job", async () => {

@@ -21,6 +21,7 @@ require("dotenv").config();
 const { randomUUID } = require("crypto");
 
 const { connectDatabase, disconnectDatabase } = require("../config/db");
+const { qrConfig } = require("../config/qr");
 const { createVerificationQR } = require("../services/qrService");
 const { toReferenceJSON } = require("../models/qrAsset");
 const { AppError } = require("../utils/errors");
@@ -100,7 +101,7 @@ async function main() {
 
   try {
     const { asset, idempotent } = await createVerificationQR(payload);
-    const reference = toReferenceJSON(asset);
+    const reference = toReferenceJSON(asset, qrConfig.publicBaseUrl);
 
     console.log(
       idempotent
@@ -111,7 +112,7 @@ async function main() {
     console.log(`  Document ID:       ${reference.documentId}`);
     console.log(`  QR Code ID:        ${reference.qrCodeId}`);
     console.log(`  Verification URL:  ${reference.verificationUrl}`);
-    console.log(`  QR Image File:     ${asset.qrCodePath ?? "(render failed, will retry on demand)"}`);
+    console.log(`  QR Image URL:      ${reference.qrImageUrl}`);
     console.log(`  Issued At:         ${reference.issuedAt}`);
     console.log(`  Expires At:        ${reference.expiresAt}`);
     console.log(`  Status:            ${reference.status}`);

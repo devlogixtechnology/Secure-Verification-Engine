@@ -3,9 +3,17 @@ require("dotenv").config();
 /**
  * Configuration for the QR generation service.
  *
- * Anything secret is read from the environment and never defaulted - the
- * process refuses to start rather than fall back to a value committed in the
- * repository.
+ * Two separate base URLs live here and they are NOT interchangeable:
+ *
+ *   verificationBaseUrl - Frontend Squad A's portal. This is the URL encoded
+ *                         into the QR image itself, because a scanning end user
+ *                         must land on the human-readable verification page,
+ *                         not on our JSON API.
+ *   publicBaseUrl       - This service's own public origin. Used to build the
+ *                         `qrImageUrl` we hand back so the portal can render the
+ *                         PNG remotely instead of reaching for a local file path.
+ *
+ * Anything secret is read from the environment and never defaulted.
  */
 
 const hashSecret = process.env.QR_HASH_SECRET;
@@ -30,16 +38,14 @@ if (!VALID_ERROR_CORRECTION.includes(errorCorrectionLevel)) {
 
 const width = Number(process.env.QR_SIZE) || 300;
 if (!Number.isInteger(width) || width < 100 || width > 2000) {
-  throw new Error(
-    `QR_SIZE must be an integer between 100 and 2000 (got "${process.env.QR_SIZE}").`
-  );
+  throw new Error(`QR_SIZE must be an integer between 100 and 2000 (got "${process.env.QR_SIZE}").`);
 }
 
 /**
  * Fallback token lifetime, in hours, used ONLY when Squad A's document carries
  * no expiryDate of its own. Their Document.expiryDate is nullable, and a
  * certificate that never expires still should not have an unbounded token, so
- * we cap it. Default is one year - deliberately long, because a 24h QR printed
+ * we cap it. Default is one year — deliberately long, because a 24h QR printed
  * onto a certificate would be useless. See docs/qr-payload-spec.md, "Expiry".
  */
 const defaultExpiryHours = Number(process.env.QR_EXPIRY_HOURS) || 8760;
@@ -67,6 +73,11 @@ const qrConfig = {
   // HMAC-SHA256 secret used to sign verification hashes
   hashSecret,
 
+  // Shared secret Backend Squad A presents on the internal API.
+  // Undefined is tolerated here (the CLI path does not need it); app.js
+  // refuses to boot the HTTP server without it.
+  internalApiKey: process.env.INTERNAL_API_KEY,
+
   defaultExpiryHours,
   errorCorrectionLevel,
   width,
@@ -75,15 +86,17 @@ const qrConfig = {
   // file is re-rendered on demand from the stored verification URL.
   outputDir: process.env.QR_OUTPUT_DIR || "./generated/qrcodes",
 
-  /**
-   * Frontend Squad A's verification portal - appended with /<qrCodeId> to form
-   * the URL encoded into the QR image itself. It points at their portal rather
-   * than at this service because a person scanning a printed certificate has to
-   * land on a readable result page, not on a JSON response.
-   */
+  // Frontend Squad A's verification portal — appended with /<qrCodeId>
   verificationBaseUrl: stripTrailingSlash(
     process.env.VERIFICATION_BASE_URL || "http://localhost:3000/verify"
   ),
+
+  // This service's own origin, used to build absolute image URLs
+  publicBaseUrl: stripTrailingSlash(
+    process.env.PUBLIC_BASE_URL || "http://localhost:4000"
+  ),
+
+  port: Number(process.env.PORT) || 4000,
 
   /**
    * Supabase Postgres connection string, shared with Backend Squad A.

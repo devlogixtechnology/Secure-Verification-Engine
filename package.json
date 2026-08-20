@@ -2,13 +2,15 @@
   "name": "secure-verification-engine",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
     "test": "playwright test",
     "generate-qr": "node scripts/generateQR.js",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy"
@@ -28,6 +30,7 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "dotenv": "^17.4.2",
+    "express": "^5.2.1",
     "mongoose": "^9.9.3",
     "qrcode": "^1.5.4"
   },

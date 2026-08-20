@@ -69,16 +69,19 @@ function effectiveStatus(row) {
  * The shape callers are given for an issued QR.
  *
  * Deliberately excludes the signature, the local filesystem path and the
- * recipient's details: a caller gets what it can act on, not internals it would
+ * recipient's details: a caller gets URLs it can fetch, not internals it would
  * have to reimplement or PII it did not ask for. This is the single definition
- * of that shape, so the CLI today and the HTTP API in the follow-up task cannot
- * drift apart.
+ * of that shape, so the CLI and the HTTP API cannot drift apart.
+ *
+ * @param {Object} row
+ * @param {string} publicBaseUrl - this service's own origin, for the image URL
  */
-function toReferenceJSON(row) {
+function toReferenceJSON(row, publicBaseUrl) {
   return {
     documentId: row.documentId,
     qrCodeId: row.qrCodeId,
     verificationUrl: row.verificationUrl,
+    qrImageUrl: `${publicBaseUrl}/api/qr/image/${row.qrCodeId}.png`,
     issuedAt: row.issuedAt.toISOString(),
     expiresAt: row.expiresAt.toISOString(),
     status: effectiveStatus(row),

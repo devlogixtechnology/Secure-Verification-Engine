@@ -113,6 +113,11 @@ function buildVerificationUrl(qrCodeId) {
   return `${qrConfig.verificationBaseUrl}/${qrCodeId}`;
 }
 
+/** Absolute, remotely-fetchable URL for the rendered PNG. */
+function buildQrImageUrl(qrCodeId) {
+  return `${qrConfig.publicBaseUrl}/api/qr/image/${qrCodeId}.png`;
+}
+
 // -- Image rendering -------------------------------------------------------
 
 const QR_RENDER_OPTIONS = {
@@ -125,11 +130,8 @@ const QR_RENDER_OPTIONS = {
 /**
  * Guard every filesystem path built from caller-supplied input.
  *
- * qrCodeId reaches this module from outside - today the CLI, shortly an HTTP
- * route parameter - so it is checked against the UUID pattern before it is ever
- * joined onto a path. Validating at the boundary of the filesystem rather than
- * only at the boundary of the request keeps the guarantee when a new caller
- * appears.
+ * qrCodeId arrives from a URL parameter on the public image route, so it is
+ * checked against the UUID pattern before it is ever joined onto a path.
  */
 function assertSafeQrCodeId(qrCodeId) {
   if (typeof qrCodeId !== "string" || !UUID_PATTERN.test(qrCodeId)) {
@@ -170,6 +172,35 @@ async function renderQrPng(verificationUrl, qrCodeId) {
   }
 
   return { buffer, filePath };
+}
+
+/**
+ * Fetch the PNG bytes for an already-issued QR, for the public image route.
+ *
+ * Serves from the disk cache when present and re-renders from the stored
+ * verification URL when it is not - so a wiped generated/ directory, an
+ * ephemeral container filesystem or a fresh deploy degrades to a slower
+ * response rather than a broken image.
+ *
+ * @returns {Promise<Buffer>}
+ * @throws {NotFoundError} when no QR was ever issued for this id
+ */
+async function getQrImageBuffer(qrCodeId) {
+  assertSafeQrCodeId(qrCodeId);
+
+  const asset = await QRAsset.findByQrCodeId(qrCodeId);
+  if (!asset) throw new NotFoundError();
+
+  const filePath = cachePathFor(qrCodeId);
+  try {
+    return await fsp.readFile(filePath);
+  } catch {
+    logger.info("QR image cache miss; re-rendering", {
+      qrCodeFp: logger.fingerprint(qrCodeId),
+    });
+    const { buffer } = await renderQrPng(asset.verificationUrl, qrCodeId);
+    return buffer;
+  }
 }
 
 // -- Generation ------------------------------------------------------------
@@ -290,11 +321,26 @@ async function createVerificationQR(payload) {
   }
 }
 
+/**
+ * Look up an issued QR by its public token.
+ * @returns {Promise<Object>} the QRAsset
+ * @throws {NotFoundError}
+ */
+async function findByQrCodeId(qrCodeId) {
+  assertSafeQrCodeId(qrCodeId);
+  const asset = await QRAsset.findByQrCodeId(qrCodeId);
+  if (!asset) throw new NotFoundError();
+  return asset;
+}
+
 module.exports = {
   createVerificationQR,
+  findByQrCodeId,
+  getQrImageBuffer,
   signVerificationHash,
   verifyVerificationHash,
   buildVerificationUrl,
+  buildQrImageUrl,
   resolveExpiry,
   renderQrPng,
   HASH_SCHEME,

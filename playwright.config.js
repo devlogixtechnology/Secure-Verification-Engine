@@ -1,25 +1,29 @@
 const { defineConfig } = require("@playwright/test");
 
+const { BASE_URL } = require("./tests/support/testEnv");
+
 /**
  * Playwright configuration for the QR generation service.
  *
- * No browser is launched and no server is started: these specs drive the
- * service module directly, in process, against a throwaway Postgres. Playwright
- * is used here purely as the test runner, so that the HTTP-level specs added by
- * the "Expose QR Generation API" task can join the same suite rather than
- * arriving with a second framework.
+ * No browser is ever launched. Playwright is used as the test runner, an HTTP
+ * client, and a process supervisor, so that the in-process service specs and the
+ * over-the-wire API specs can share one suite instead of needing two frameworks.
+ *
+ * globalSetup owns the whole startup sequence: a throwaway PostgreSQL, the
+ * committed migrations applied to it, then the API server booted against it.
+ * Playwright's `webServer` option cannot be used, because it waits for the
+ * server to be healthy before running globalSetup and the two would deadlock —
+ * see tests/support/testApi.js.
  */
 module.exports = defineConfig({
   testDir: "./tests/e2e",
 
-  // Brings up a throwaway Postgres and applies prisma/schema.prisma to it once
-  // for the whole run. See tests/support/testDatabase.js.
   globalSetup: require.resolve("./tests/support/globalSetup"),
   globalTeardown: require.resolve("./tests/support/globalTeardown"),
 
-  // The persistence specs share one database, and concurrency is exercised
-  // deliberately inside qr-idempotency.spec.js. Letting Playwright add its own
-  // on top would make a failure hard to attribute.
+  // The suite shares one database and one server. Concurrency is exercised
+  // deliberately inside the idempotency specs; letting Playwright add its own on
+  // top would make a failure hard to attribute.
   fullyParallel: false,
   workers: 1,
 
@@ -33,4 +37,10 @@ module.exports = defineConfig({
   reporter: process.env.CI
     ? [["list"], ["html", { open: "never" }]]
     : [["list"]],
+
+  use: {
+    baseURL: BASE_URL,
+    extraHTTPHeaders: { "Content-Type": "application/json" },
+  },
+
 });

@@ -2,12 +2,8 @@
 
 **Module:** Squad Voyager (Backend Squad B) — Cryptographic QR Generation
 **Task:** 5.1 QR Code Generation & Cryptographic Signing
-**Version:** 1.1 · signing scheme `v1`
-**Status:** Signing, validation and idempotency are implemented in `services/qrService.js`.
-The HTTP surface described in §2 and §6 is delivered by the companion task
-*Expose QR Generation API* — the contract is published here first so both other squads
-can build against it without waiting for that branch to land.
-Sections marked **OPEN** need sign-off from Backend Squad A or Frontend Squad A.
+**Version:** 1.2 · signing scheme `v1`
+**Status:** Implemented. Sections marked **OPEN** need sign-off from Backend Squad A or Frontend Squad A.
 
 This is the document Tasks 5.2–5.4 and Frontend Squad A build against. If you change
 anything here, bump the version and tell both squads — the whole point of the document
@@ -37,9 +33,7 @@ by it. It exists so that a stored record can be proven untampered.
 
 ## 2. Request payload
 
-Accepted today by `createVerificationQR()` (service module and CLI), and shortly by
-`POST /api/internal/qr/generate` once the API task lands. Both drive the same function,
-so the rules below hold identically either way.
+`POST /api/internal/qr/generate`
 
 ```json
 {
@@ -178,34 +172,33 @@ was returned rather than quietly regenerated. It is asserted in
 
 ## 6. Response
 
-`toReferenceJSON()` on the stored record is the single definition of this shape, so the
-CLI today and the HTTP API in the follow-up task cannot drift apart.
-
 ```json
 {
-  "documentId": "3f2b8c10-1c4e-4f8a-9d21-6b5a0c9e7f11",
-  "qrCodeId": "9a7d1e44-2f60-4c8b-8e35-11c9d0a4b872",
-  "verificationUrl": "http://localhost:3000/verify/9a7d1e44-2f60-4c8b-8e35-11c9d0a4b872",
-  "issuedAt": "2026-08-20T10:00:00.000Z",
-  "expiresAt": "2026-12-31T23:59:59.000Z",
-  "status": "active"
+  "success": true,
+  "idempotent": false,
+  "message": "QR code generated successfully.",
+  "data": {
+    "documentId": "3f2b8c10-1c4e-4f8a-9d21-6b5a0c9e7f11",
+    "qrCodeId": "9a7d1e44-2f60-4c8b-8e35-11c9d0a4b872",
+    "verificationUrl": "http://localhost:3000/verify/9a7d1e44-2f60-4c8b-8e35-11c9d0a4b872",
+    "qrImageUrl": "http://localhost:4000/api/qr/image/9a7d1e44-2f60-4c8b-8e35-11c9d0a4b872.png",
+    "issuedAt": "2026-08-20T10:00:00.000Z",
+    "expiresAt": "2026-12-31T23:59:59.000Z",
+    "status": "active"
+  }
 }
 ```
 
-The generation call also reports an `idempotent` flag alongside the record. Over HTTP it
-will be returned explicitly rather than inferred from `200` vs `201`, so a caller that
-only checks `response.ok` can still distinguish a fresh issue from a replay.
+`idempotent` is returned explicitly rather than inferred from `200` vs `201`, so a caller
+that only checks `response.ok` can still distinguish a fresh issue from a replay.
 
-### About `verificationUrl`
+### The two URLs are different things
 
-It is encoded *inside* the QR image and points at **Frontend Squad A's portal**
-(`/verify/<qrCodeId>`), because a person scanning a printed certificate must land on a
-readable result page, not on our JSON API. It is deliberately not a URL on this service.
-
-A second URL, `qrImageUrl` — the PNG served over HTTP so the portal can render it with a
-plain `<img src>` — joins this shape with the *Expose QR Generation API* task. Until then
-the rendered file is addressable only by local path, which is useless to Nova; that is
-precisely what the API task exists to fix.
+- **`verificationUrl`** — encoded *inside* the QR image. Points at **Frontend Squad A's
+  portal** (`/verify/<qrCodeId>`), because a person scanning a printed certificate must
+  land on a readable result page, not on our JSON API.
+- **`qrImageUrl`** — the PNG itself, served by us over HTTP so the portal can render it
+  with a plain `<img src>`. A filesystem path inside our container is useless to them.
 
 > **OPEN — Frontend Squad A:** we build `VERIFICATION_BASE_URL/<qrCodeId>` and default to
 > `http://localhost:3000/verify`. Confirm the production origin and that your route is
@@ -221,10 +214,8 @@ of the reference contract and does not appear in a lookup response.
 
 ## 7. Errors
 
-Errors carry a stable `code` and an HTTP `status` from the moment they are thrown, so the
-mapping below is already fixed even though the HTTP layer that renders it arrives with the
-API task. The envelope matches Squad A's Technical Specification §8.1, so a client that
-already handles their errors handles ours with no second code path.
+Envelope matches Squad A's Technical Specification §8.1, so a client that already handles
+their errors handles ours with no second code path.
 
 ```json
 {
@@ -286,5 +277,6 @@ stable enough to correlate across lines, useless as a token.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-08-22 | Added `qrImageUrl` to the response shape, served by the new public image route. No change to the payload, the signing construction or the idempotency rules. |
 | 1.1 | 2026-08-22 | Storage moved from MongoDB to the shared Supabase Postgres, in a dedicated `voyager` schema. **No change to the payload, the signing construction, the expiry policy or the idempotency rules** — the contract in this document is unchanged and nothing built against v1.0 needs to move. |
 | 1.0 | 2026-08-20 | First specification. Realigned onto Squad A's identifiers: `documentId` is now the idempotency key and `qrCodeId` the public token, replacing the previously self-minted HMAC identifier. Signing changed to bind their identifiers plus the validity window. Expiry now honours the document's own date. |

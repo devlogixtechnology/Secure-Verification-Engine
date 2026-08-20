@@ -113,4 +113,37 @@ function readDatabaseUrl() {
   return JSON.parse(fs.readFileSync(STATE_FILE, "utf8")).databaseUrl;
 }
 
-module.exports = { startTestDatabase, stopTestDatabase, readDatabaseUrl };
+/**
+ * Wait for globalSetup to publish the connection string.
+ *
+ * Playwright launches `webServer` BEFORE it runs globalSetup, so the API server
+ * process starts life without a database to connect to. Rather than reimplement
+ * process supervision and readiness polling to control that ordering, the server
+ * simply waits here — it has Playwright's full webServer startup budget, and
+ * globalSetup publishes within a few seconds.
+ *
+ * @param {number} timeoutMs
+ * @returns {Promise<string>} the connection string
+ */
+async function waitForDatabaseUrl(timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const databaseUrl = readDatabaseUrl();
+    if (databaseUrl) return databaseUrl;
+
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for globalSetup to start the test database.`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+module.exports = {
+  startTestDatabase,
+  stopTestDatabase,
+  readDatabaseUrl,
+  waitForDatabaseUrl,
+};
