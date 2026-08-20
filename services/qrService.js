@@ -66,7 +66,7 @@ async function generateQRCode(verificationUrl, hash) {
   }
 
   // Generate PNG file
-  const fileName = `qr_${hash.substring(0, 12)}_${Date.now()}.png`;
+  const fileName = `qr_${hash.substring(0, 12)}_${uuidv4()}.png`;
   const filePath = path.join(outputDir, fileName);
   await QRCode.toFile(filePath, verificationUrl, qrOptions);
 
