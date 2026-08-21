@@ -7,7 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "playwright test",
     "generate-qr": "node scripts/generateQR.js"
   },
   "repository": {
@@ -25,7 +25,10 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "mongoose": "^9.9.3",
-    "qrcode": "^1.5.4",
-    "uuid": "^14.0.2"
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "mongodb-memory-server": "^11.2.0"
   }
 }
