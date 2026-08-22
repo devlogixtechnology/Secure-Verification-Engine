@@ -1,6 +1,10 @@
 const { test, expect } = require("@playwright/test");
 
-const { startTestDatabase, stopTestDatabase } = require("../support/db");
+const {
+  startTestDatabase,
+  stopTestDatabase,
+  truncateQrAssets,
+} = require("../support/db");
 const { newDocumentPayload } = require("../support/fixtures");
 
 const { createVerificationQR } = require("../../services/qrService");
@@ -16,8 +20,8 @@ const QRAsset = require("../../models/qrAsset");
  */
 
 test.beforeAll(async () => {
-  test.setTimeout(180_000);
   await startTestDatabase();
+  await truncateQrAssets();
 });
 
 test.afterAll(async () => {
@@ -108,7 +112,7 @@ test.describe("Validation", () => {
 
     await expectRejection(payload);
 
-    expect(await QRAsset.countDocuments({ documentId: payload.documentId })).toBe(0);
+    expect(await QRAsset.countByDocumentId(payload.documentId)).toBe(0);
   });
 });
 
@@ -158,7 +162,7 @@ test.describe("Generation contract", () => {
 
   test("keeps the signature out of the reference shape", async () => {
     const { asset } = await createVerificationQR(newDocumentPayload());
-    const reference = asset.toReferenceJSON();
+    const reference = QRAsset.toReferenceJSON(asset);
 
     expect(reference).not.toHaveProperty("verificationHash");
     expect(reference).not.toHaveProperty("qrCodePath");
@@ -172,10 +176,10 @@ test.describe("Generation contract", () => {
     // Expiry is derived from the clock on read, so a row does not go stale
     // waiting for a background job to notice.
     asset.expiresAt = new Date(Date.now() - 1000);
-    expect(asset.effectiveStatus).toBe("expired");
+    expect(QRAsset.effectiveStatus(asset)).toBe("expired");
 
     // Revocation is the more important fact, so it survives expiry.
     asset.status = "revoked";
-    expect(asset.effectiveStatus).toBe("revoked");
+    expect(QRAsset.effectiveStatus(asset)).toBe("revoked");
   });
 });

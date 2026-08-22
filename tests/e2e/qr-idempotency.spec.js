@@ -1,7 +1,11 @@
 const { randomUUID } = require("crypto");
 const { test, expect } = require("@playwright/test");
 
-const { startTestDatabase, stopTestDatabase } = require("../support/db");
+const {
+  startTestDatabase,
+  stopTestDatabase,
+  truncateQrAssets,
+} = require("../support/db");
 const { newDocumentPayload } = require("../support/fixtures");
 
 const {
@@ -17,12 +21,16 @@ const QRAsset = require("../../models/qrAsset");
  * call times out on their side after we already committed, and their retry
  * arrives. Without a guard that produces a second QR code and - once the email
  * module is wired up - a second email to the recipient.
+ *
+ * The guarantee now rests on a Postgres UNIQUE constraint rather than a MongoDB
+ * unique index. These tests did not change when the storage engine did, which is
+ * the strongest evidence that what they assert is the behaviour and not the
+ * implementation.
  */
 
 test.beforeAll(async () => {
-  // First run on a clean machine downloads a mongod binary.
-  test.setTimeout(180_000);
   await startTestDatabase();
+  await truncateQrAssets();
 });
 
 test.afterAll(async () => {
@@ -40,7 +48,7 @@ test.describe("Idempotency", () => {
     expect(second.idempotent).toBe(true);
 
     // Same database row, not merely an equivalent one.
-    expect(second.asset._id.toString()).toBe(first.asset._id.toString());
+    expect(second.asset.id).toBe(first.asset.id);
 
     // An identical issue timestamp is the observable proof that the stored
     // record was returned rather than quietly regenerated.
@@ -54,15 +62,16 @@ test.describe("Idempotency", () => {
       await createVerificationQR(payload);
     }
 
-    expect(await QRAsset.countDocuments({ documentId: payload.documentId })).toBe(1);
+    expect(await QRAsset.countByDocumentId(payload.documentId)).toBe(1);
   });
 
   test("survives a burst of concurrent identical triggers", async () => {
     const payload = newDocumentPayload();
 
     // A read-then-write check would let several of these through; the guarantee
-    // has to come from the unique index, which is why connectDatabase() awaits
-    // the index build before anything is served.
+    // has to come from the UNIQUE constraint. Unlike a Mongo index, that is DDL
+    // applied by a migration, so it either exists before the process starts or
+    // the migration has not been run - there is no startup window to race.
     const results = await Promise.all(
       Array.from({ length: 8 }, () => createVerificationQR(payload))
     );
@@ -70,10 +79,10 @@ test.describe("Idempotency", () => {
     expect(results.filter((r) => !r.idempotent)).toHaveLength(1);
     expect(results.filter((r) => r.idempotent)).toHaveLength(7);
 
-    const distinctIds = new Set(results.map((r) => r.asset._id.toString()));
+    const distinctIds = new Set(results.map((r) => r.asset.id));
     expect(distinctIds.size).toBe(1);
 
-    expect(await QRAsset.countDocuments({ documentId: payload.documentId })).toBe(1);
+    expect(await QRAsset.countByDocumentId(payload.documentId)).toBe(1);
   });
 
   test("the returned record still verifies against its signature", async () => {
@@ -81,10 +90,10 @@ test.describe("Idempotency", () => {
     await createVerificationQR(payload);
     await createVerificationQR(payload);
 
-    // select:false on the hash, so it has to be asked for explicitly.
-    const stored = await QRAsset.findOne({
-      documentId: payload.documentId,
-    }).select("+verificationHash");
+    // The default projection omits the hash, so it has to be asked for.
+    const stored = await QRAsset.findByDocumentId(payload.documentId, {
+      withHash: true,
+    });
 
     expect(verifyVerificationHash(stored)).toBe(true);
   });
@@ -147,9 +156,9 @@ test.describe("Conflicts we refuse to absorb", () => {
       () => {}
     );
 
-    const stored = await QRAsset.findOne({ documentId: payload.documentId });
+    const stored = await QRAsset.findByDocumentId(payload.documentId);
     expect(stored.qrCodeId).toBe(payload.qrCodeId);
     expect(stored.issuedAt.getTime()).toBe(asset.issuedAt.getTime());
-    expect(await QRAsset.countDocuments({ documentId: payload.documentId })).toBe(1);
+    expect(await QRAsset.countByDocumentId(payload.documentId)).toBe(1);
   });
 });

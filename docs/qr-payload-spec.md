@@ -2,7 +2,7 @@
 
 **Module:** Squad Voyager (Backend Squad B) — Cryptographic QR Generation
 **Task:** 5.1 QR Code Generation & Cryptographic Signing
-**Version:** 1.0 · signing scheme `v1`
+**Version:** 1.1 · signing scheme `v1`
 **Status:** Signing, validation and idempotency are implemented in `services/qrService.js`.
 The HTTP surface described in §2 and §6 is delivered by the companion task
 *Expose QR Generation API* — the contract is published here first so both other squads
@@ -110,8 +110,8 @@ this closes.
 
 The hash is **not** in the QR code and **not** in the verification URL. A scanned token
 is resolved by database lookup, not by signature verification, so this is not a
-self-contained JWT-style credential — an attacker who can write directly to our MongoDB
-*and* knows `QR_HASH_SECRET` could forge a valid record. That is the accepted design:
+self-contained JWT-style credential — an attacker who can write directly to our
+`voyager.qr_assets` table *and* knows `QR_HASH_SECRET` could forge a valid record. That is the accepted design:
 Squad A's Postgres row remains authoritative for whether a document is real.
 
 ### Secret handling
@@ -155,8 +155,8 @@ flag and expiry is derived from the clock at request time. A revoked document st
 
 **Rule: one QR per `documentId`, forever.**
 
-Guaranteed by a unique index on `documentId` in MongoDB — not by an application-level
-"check then insert", which two concurrent requests both pass.
+Guaranteed by a `UNIQUE` constraint on `document_id` in Postgres — not by an
+application-level "check then insert", which two concurrent requests both pass.
 
 | Situation | Result |
 |---|---|
@@ -261,7 +261,7 @@ Logs are treated as an untrusted boundary. Never written in the clear:
 - `qrCodeId` (it is the public token — a log line containing it is a usable credential)
 - `QR_HASH_SECRET`, `INTERNAL_API_KEY`
 - full verification URLs
-- the MongoDB URI (it carries credentials)
+- `DATABASE_URL` (it carries credentials for a database shared with Squad A)
 
 `documentId` **is** logged: it is an internal identifier, useless without a `qrCodeId`,
 and correlating a request without it is impractical. Sensitive values enter a log line
@@ -286,4 +286,5 @@ stable enough to correlate across lines, useless as a token.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.1 | 2026-08-22 | Storage moved from MongoDB to the shared Supabase Postgres, in a dedicated `voyager` schema. **No change to the payload, the signing construction, the expiry policy or the idempotency rules** — the contract in this document is unchanged and nothing built against v1.0 needs to move. |
 | 1.0 | 2026-08-20 | First specification. Realigned onto Squad A's identifiers: `documentId` is now the idempotency key and `qrCodeId` the public token, replacing the previously self-minted HMAC identifier. Signing changed to bind their identifiers plus the validity window. Expiry now honours the document's own date. |

@@ -13,7 +13,7 @@
  * omit --qrCodeId and one will be generated, which is fine for checking the
  * pipeline and wrong for anything that has to match their database.
  *
- * Requires MONGODB_URI and QR_HASH_SECRET (see .env.example).
+ * Requires DATABASE_URL and QR_HASH_SECRET (see .env.example).
  */
 
 require("dotenv").config();
@@ -22,6 +22,7 @@ const { randomUUID } = require("crypto");
 
 const { connectDatabase, disconnectDatabase } = require("../config/db");
 const { createVerificationQR } = require("../services/qrService");
+const { toReferenceJSON } = require("../models/qrAsset");
 const { AppError } = require("../utils/errors");
 
 const TEXT_FLAGS = [
@@ -99,7 +100,7 @@ async function main() {
 
   try {
     const { asset, idempotent } = await createVerificationQR(payload);
-    const reference = asset.toReferenceJSON();
+    const reference = toReferenceJSON(asset);
 
     console.log(
       idempotent

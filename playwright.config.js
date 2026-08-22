@@ -4,13 +4,18 @@ const { defineConfig } = require("@playwright/test");
  * Playwright configuration for the QR generation service.
  *
  * No browser is launched and no server is started: these specs drive the
- * service module directly, in process, against a throwaway MongoDB. Playwright
+ * service module directly, in process, against a throwaway Postgres. Playwright
  * is used here purely as the test runner, so that the HTTP-level specs added by
  * the "Expose QR Generation API" task can join the same suite rather than
  * arriving with a second framework.
  */
 module.exports = defineConfig({
   testDir: "./tests/e2e",
+
+  // Brings up a throwaway Postgres and applies prisma/schema.prisma to it once
+  // for the whole run. See tests/support/testDatabase.js.
+  globalSetup: require.resolve("./tests/support/globalSetup"),
+  globalTeardown: require.resolve("./tests/support/globalTeardown"),
 
   // The persistence specs share one database, and concurrency is exercised
   // deliberately inside qr-idempotency.spec.js. Letting Playwright add its own

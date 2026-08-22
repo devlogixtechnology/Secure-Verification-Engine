@@ -1,108 +1,160 @@
-const mongoose = require("mongoose");
+const { getPrisma } = require("../config/db");
 
 /**
- * A QR asset generated for one of Backend Squad A's documents.
+ * Data access for the qr_assets table.
  *
- * This collection is a generation/delivery ledger, NOT a second source of truth
- * for document data. Squad A's Postgres `documents` table owns the document;
- * we key off their identifiers and keep only what we need to render, sign and
- * re-serve the QR.
- *
- * Two identifiers arrive from Squad A and each does a distinct job:
- *   documentId - their Document.id. Our idempotency key: one QR per document,
- *                enforced by the unique index below rather than by application
- *                logic, so a retried webhook cannot race past the check.
- *   qrCodeId   - their Document.qrCodeId. The public, unguessable token that
- *                appears in the verification URL.
+ * Every Prisma-specific detail lives here — field selection, error codes, column
+ * naming — so services/qrService.js can stay a pure module that knows nothing
+ * about the driver underneath it. That boundary is what made the move from
+ * MongoDB to Supabase a contained change rather than a rewrite, and it is worth
+ * preserving for the same reason.
  */
-const qrAssetSchema = new mongoose.Schema(
-  {
-    // -- Identity (owned by Backend Squad A) -----------------------------
-    documentId: {
-      type: String,
-      required: true,
-      unique: true, // the idempotency guard
-    },
-    qrCodeId: {
-      type: String,
-      required: true,
-      unique: true,
-    },
 
-    // -- Cryptographic material ------------------------------------------
-    /**
-     * HMAC-SHA256 over documentId, qrCodeId, issuedAt and expiresAt.
-     * Internal integrity check only: never returned to a caller, never logged,
-     * never placed in the QR image or the verification URL.
-     */
-    verificationHash: {
-      type: String,
-      required: true,
-      select: false, // excluded from queries unless explicitly requested
-    },
+/**
+ * Default projection: everything EXCEPT the signature.
+ *
+ * Mongoose had `select: false` to make a field opt-in. Prisma has no equivalent —
+ * a bare findUnique returns every column — so the protection has to be an
+ * explicit allowlist. Anything added to the table stays invisible until it is
+ * added here, which is the safe direction for that mistake to fail in.
+ */
+const DEFAULT_SELECT = Object.freeze({
+  id: true,
+  documentId: true,
+  qrCodeId: true,
+  documentType: true,
+  title: true,
+  referenceNumber: true,
+  recipientName: true,
+  recipientEmail: true,
+  issuedAt: true,
+  expiresAt: true,
+  qrCodePath: true,
+  verificationUrl: true,
+  status: true,
+  metadata: true,
+  createdAt: true,
+  updatedAt: true,
+});
 
-    // -- Document snapshot (denormalised, display-only) -------------------
-    // Kept so the email module can compose a message without a round trip to
-    // Squad A. Squad A remains authoritative if these ever diverge.
-    documentType: { type: String },
-    title: { type: String },
-    referenceNumber: { type: String },
-    recipientName: { type: String },
-    recipientEmail: { type: String }, // PII - see docs/qr-payload-spec.md
+/** Opt-in projection for the integrity check. Never used to build a response. */
+const SELECT_WITH_HASH = Object.freeze({
+  ...DEFAULT_SELECT,
+  verificationHash: true,
+});
 
-    // -- Token timing -----------------------------------------------------
-    issuedAt: { type: Date, required: true },
-    expiresAt: { type: Date, required: true, index: true },
+function selectFor({ withHash = false } = {}) {
+  return withHash ? SELECT_WITH_HASH : DEFAULT_SELECT;
+}
 
-    // -- Rendered assets --------------------------------------------------
-    /** Local PNG cache path. Nullable: a missing file is re-rendered on demand. */
-    qrCodePath: { type: String, default: null },
-
-    /** The URL encoded in the QR image - Frontend Squad A's portal deep link. */
-    verificationUrl: { type: String, required: true },
-
-    // -- Lifecycle --------------------------------------------------------
-    status: {
-      type: String,
-      enum: ["active", "expired", "revoked"],
-      default: "active",
-    },
-
-    metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
-  },
-  { timestamps: true }
-);
+// -- Derived values ---------------------------------------------------------
 
 /**
  * Status with expiry applied.
  *
  * `status` is the stored lifecycle flag; expiry is a function of the clock, so
- * deriving it on read avoids needing a sweeper job to keep rows honest. A
- * revoked document stays revoked even after its expiry passes - revocation is
- * the more important fact to report.
+ * deriving it on read avoids needing a sweeper job to keep rows honest. A revoked
+ * document stays revoked even after its expiry passes — revocation is the more
+ * important fact to report.
+ *
+ * @param {Object} row
+ * @returns {"active"|"expired"|"revoked"}
  */
-qrAssetSchema.virtual("effectiveStatus").get(function effectiveStatus() {
-  if (this.status !== "active") return this.status;
-  return this.expiresAt.getTime() < Date.now() ? "expired" : "active";
-});
+function effectiveStatus(row) {
+  if (row.status !== "active") return row.status;
+  return row.expiresAt.getTime() < Date.now() ? "expired" : "active";
+}
 
 /**
  * The shape callers are given for an issued QR.
  *
- * Deliberately excludes verificationHash and the local filesystem path: a
- * caller gets what it can act on, not internals it would have to reimplement.
- * This is the single definition of that shape, so the CLI today and the HTTP
- * API in the follow-up task cannot drift apart.
+ * Deliberately excludes the signature, the local filesystem path and the
+ * recipient's details: a caller gets what it can act on, not internals it would
+ * have to reimplement or PII it did not ask for. This is the single definition
+ * of that shape, so the CLI today and the HTTP API in the follow-up task cannot
+ * drift apart.
  */
-qrAssetSchema.methods.toReferenceJSON = function toReferenceJSON() {
+function toReferenceJSON(row) {
   return {
-    documentId: this.documentId,
-    qrCodeId: this.qrCodeId,
-    verificationUrl: this.verificationUrl,
-    issuedAt: this.issuedAt.toISOString(),
-    expiresAt: this.expiresAt.toISOString(),
-    status: this.effectiveStatus,
+    documentId: row.documentId,
+    qrCodeId: row.qrCodeId,
+    verificationUrl: row.verificationUrl,
+    issuedAt: row.issuedAt.toISOString(),
+    expiresAt: row.expiresAt.toISOString(),
+    status: effectiveStatus(row),
   };
-};
+}
 
-module.exports = mongoose.model("QRAsset", qrAssetSchema);
+// -- Queries ----------------------------------------------------------------
+
+function findByDocumentId(documentId, options) {
+  return getPrisma().qrAsset.findUnique({
+    where: { documentId },
+    select: selectFor(options),
+  });
+}
+
+function findByQrCodeId(qrCodeId, options) {
+  return getPrisma().qrAsset.findUnique({
+    where: { qrCodeId },
+    select: selectFor(options),
+  });
+}
+
+function countByDocumentId(documentId) {
+  return getPrisma().qrAsset.count({ where: { documentId } });
+}
+
+function insert(data) {
+  return getPrisma().qrAsset.create({ data, select: DEFAULT_SELECT });
+}
+
+// -- Constraint violations --------------------------------------------------
+
+/**
+ * Postgres column names, as Prisma reports them in a P2002, mapped back to the
+ * field names the rest of the codebase speaks.
+ */
+const CONSTRAINT_FIELDS = Object.freeze({
+  document_id: "documentId",
+  documentId: "documentId",
+  qr_code_id: "qrCodeId",
+  qrCodeId: "qrCodeId",
+});
+
+/**
+ * Identify which unique constraint a write violated.
+ *
+ * Prisma raises P2002 for a unique violation (Postgres SQLSTATE 23505) and names
+ * the offending column in `meta.target`. Returning the field name rather than the
+ * raw error lets the service decide what a collision *means* without knowing
+ * anything about Prisma — which is the same job `duplicateKeyField` did for
+ * MongoDB's E11000.
+ *
+ * @returns {string|null} "documentId", "qrCodeId", or null when this is not a
+ *                        unique violation at all
+ */
+function uniqueViolationField(err) {
+  if (err?.code !== "P2002") return null;
+
+  const target = err.meta?.target;
+  const columns = Array.isArray(target) ? target : [target].filter(Boolean);
+
+  for (const column of columns) {
+    const field = CONSTRAINT_FIELDS[column];
+    if (field) return field;
+  }
+  return null;
+}
+
+module.exports = {
+  DEFAULT_SELECT,
+  SELECT_WITH_HASH,
+  effectiveStatus,
+  toReferenceJSON,
+  findByDocumentId,
+  findByQrCodeId,
+  countByDocumentId,
+  insert,
+  uniqueViolationField,
+};

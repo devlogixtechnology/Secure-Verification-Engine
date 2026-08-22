@@ -142,8 +142,12 @@ function validateQrPayload(payload) {
   }
 
   return {
-    documentId: payload.documentId,
-    qrCodeId: payload.qrCodeId,
+    // Lower-cased deliberately. Postgres normalises uuid columns, so a payload
+    // sent with upper-case hex would come back lower-case and the idempotency
+    // comparison against a stored qrCodeId would spuriously report a conflict.
+    // Normalising at the boundary keeps one canonical form everywhere.
+    documentId: payload.documentId.toLowerCase(),
+    qrCodeId: payload.qrCodeId.toLowerCase(),
     documentType: payload.documentType ?? null,
     title: payload.title ?? null,
     referenceNumber: payload.referenceNumber ?? null,

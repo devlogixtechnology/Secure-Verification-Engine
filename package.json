@@ -8,7 +8,10 @@
   },
   "scripts": {
     "test": "playwright test",
-    "generate-qr": "node scripts/generateQR.js"
+    "generate-qr": "node scripts/generateQR.js",
+    "postinstall": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy"
   },
   "repository": {
     "type": "git",
@@ -23,12 +26,14 @@
   },
   "homepage": "https://github.com/devlogixtechnology/Secure-Verification-Engine#readme",
   "dependencies": {
+    "@prisma/client": "^5.22.0",
     "dotenv": "^17.4.2",
     "mongoose": "^9.9.3",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
-    "mongodb-memory-server": "^11.2.0"
+    "embedded-postgres": "^18.4.0-beta.17",
+    "prisma": "^5.22.0"
   }
 }

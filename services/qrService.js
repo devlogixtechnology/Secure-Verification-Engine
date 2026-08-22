@@ -65,9 +65,9 @@ function signVerificationHash({ documentId, qrCodeId, issuedAt, expiresAt }) {
 /**
  * Recompute a stored record signature and compare it in constant time.
  *
- * @param {Object} asset - a QRAsset loaded WITH verificationHash. It is
- *                         select:false, so query with
- *                         .select("+verificationHash")
+ * @param {Object} asset - a row loaded WITH verificationHash. The default
+ *                         projection omits it, so load it with
+ *                         findByDocumentId(id, { withHash: true })
  * @returns {boolean} true when the record has not been tampered with
  */
 function verifyVerificationHash(asset) {
@@ -174,15 +174,6 @@ async function renderQrPng(verificationUrl, qrCodeId) {
 
 // -- Generation ------------------------------------------------------------
 
-/**
- * Distinguish which unique index a Mongo duplicate-key error tripped.
- * @returns {string|null} the offending field name
- */
-function duplicateKeyField(err) {
-  if (err?.code !== 11000) return null;
-  return Object.keys(err.keyPattern ?? err.keyValue ?? {})[0] ?? null;
-}
-
 function conflictForMismatch(existing, requestedQrCodeId) {
   return new ConflictError(
     "This documentId was already issued a QR code with a different qrCodeId.",
@@ -201,9 +192,9 @@ function conflictForMismatch(existing, requestedQrCodeId) {
  * Idempotent on documentId. A retried webhook, a duplicate queue delivery or
  * two concurrent calls all converge on a single QR asset: the first call
  * creates it, every later call gets that same record back with
- * idempotent: true. The guarantee rests on the unique index in MongoDB rather
- * than on a read-then-write check, which two concurrent requests would both
- * pass.
+ * idempotent: true. The guarantee rests on a UNIQUE constraint in Postgres
+ * rather than on a read-then-write check, which two concurrent requests would
+ * both pass.
  *
  * The one case we refuse rather than absorb: the same documentId arriving with
  * a different qrCodeId. Silently returning the stored QR would hand Squad A a
@@ -219,7 +210,7 @@ async function createVerificationQR(payload) {
 
   // Fast path: already issued. Cheap, and covers the overwhelming majority of
   // duplicate triggers without touching the QR renderer.
-  const existing = await QRAsset.findOne({ documentId });
+  const existing = await QRAsset.findByDocumentId(documentId);
   if (existing) {
     if (existing.qrCodeId !== qrCodeId) {
       throw conflictForMismatch(existing, qrCodeId);
@@ -244,7 +235,7 @@ async function createVerificationQR(payload) {
   const { filePath } = await renderQrPng(verificationUrl, qrCodeId);
 
   try {
-    const asset = await QRAsset.create({
+    const asset = await QRAsset.insert({
       documentId,
       qrCodeId,
       verificationHash,
@@ -269,12 +260,12 @@ async function createVerificationQR(payload) {
 
     return { asset, idempotent: false };
   } catch (err) {
-    const field = duplicateKeyField(err);
+    const field = QRAsset.uniqueViolationField(err);
 
     // Lost a race against a concurrent identical request. The winner record is
     // the canonical one; return it and report the call as idempotent.
     if (field === "documentId") {
-      const winner = await QRAsset.findOne({ documentId });
+      const winner = await QRAsset.findByDocumentId(documentId);
       if (winner) {
         if (winner.qrCodeId !== qrCodeId) {
           throw conflictForMismatch(winner, qrCodeId);

@@ -47,6 +47,20 @@ if (!Number.isFinite(defaultExpiryHours) || defaultExpiryHours <= 0) {
   throw new Error("QR_EXPIRY_HOURS must be a positive number of hours.");
 }
 
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error(
+    "DATABASE_URL is required. Point it at the shared Supabase Postgres, including ?schema=voyager"
+  );
+}
+if (!/[?&]schema=/.test(databaseUrl)) {
+  // Failing here is far kinder than discovering at migrate time that we have
+  // written our tables into Squad A's `public` schema.
+  throw new Error(
+    "DATABASE_URL must name a schema, e.g. ...?schema=voyager — see .env.example"
+  );
+}
+
 const stripTrailingSlash = (url) => url.replace(/\/+$/, "");
 
 const qrConfig = {
@@ -71,9 +85,15 @@ const qrConfig = {
     process.env.VERIFICATION_BASE_URL || "http://localhost:3000/verify"
   ),
 
-  mongoUri:
-    process.env.MONGODB_URI ||
-    "mongodb://localhost:27017/secure-verification-engine",
+  /**
+   * Supabase Postgres connection string, shared with Backend Squad A.
+   *
+   * It must carry `?schema=voyager` (or whatever schema this module owns).
+   * Prisma writes its `_prisma_migrations` table into the schema named here, so
+   * without it our migrations would land in `public` alongside Squad A's and the
+   * two squads would overwrite each other's migration history.
+   */
+  databaseUrl,
 };
 
 module.exports = { qrConfig };

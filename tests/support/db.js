@@ -1,42 +1,36 @@
 const { applyToProcess } = require("./testEnv");
 
-// Must run before config/qr.js is pulled in transitively.
+// Must run before config/qr.js is pulled in transitively — it reads and
+// validates the environment, DATABASE_URL included, at module load time.
 applyToProcess();
 
-const { MongoMemoryServer } = require("mongodb-memory-server");
-const { connectDatabase, disconnectDatabase } = require("../../config/db");
+const { connectDatabase, disconnectDatabase, getPrisma } = require("../../config/db");
 
 /**
- * Throwaway MongoDB for the specs that touch persistence.
+ * Per-worker connection to the throwaway Postgres that globalSetup started.
  *
- * An in-memory server keeps the suite hermetic: no shared fixture database to
- * reset between runs, and - importantly for the idempotency tests - the unique
- * indexes are built fresh every time, through the same connectDatabase() the
- * real process uses.
- *
- * Set TEST_MONGODB_URI to run against a real instance instead, which is the
- * escape hatch when the mongodb-memory-server binary download is blocked.
+ * Connects through the production connectDatabase(), not a test-only substitute.
+ * If that function were broken the suite would break with it, which is the point:
+ * a harness that bypasses the real startup path can pass while production fails.
  */
 
-let mongoServer = null;
-
 async function startTestDatabase() {
-  let uri = process.env.TEST_MONGODB_URI;
-
-  if (!uri) {
-    mongoServer = await MongoMemoryServer.create();
-    uri = mongoServer.getUri();
-  }
-
-  await connectDatabase(uri);
+  await connectDatabase(process.env.DATABASE_URL);
 }
 
 async function stopTestDatabase() {
   await disconnectDatabase();
-  if (mongoServer) {
-    await mongoServer.stop();
-    mongoServer = null;
-  }
 }
 
-module.exports = { startTestDatabase, stopTestDatabase };
+/**
+ * Empty the table between spec files.
+ *
+ * Specs mint fresh UUIDs so they do not actually collide, but a clean table
+ * makes a failure easier to read and stops one file's rows inflating another
+ * file's counts.
+ */
+async function truncateQrAssets() {
+  await getPrisma().qrAsset.deleteMany({});
+}
+
+module.exports = { startTestDatabase, stopTestDatabase, truncateQrAssets };
