@@ -3,3 +3,6 @@ node_modules/
 
 # Generated QR code images (keep the directory, ignore the PNGs)
 generated/qrcodes/*.png
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
